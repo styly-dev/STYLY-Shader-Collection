@@ -1,7 +1,7 @@
 {
   "name": "com.styly.shader-collection.urp",
   "version": "0.0.1",
-  "displayName": "STYLY Shader Collection",
-  "description": "STYLY Shader Collection",
+  "displayName": "STYLY Shader Collection - URP",
+  "description": "STYLY Shader Collection for Universal Render Pipeline",
   "unity": "2022.3"
 }
