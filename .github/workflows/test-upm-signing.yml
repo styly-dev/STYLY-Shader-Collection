@@ -1,0 +1,49 @@
+name: Test UPM signing
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+      - codex/upm-package-signing
+    paths:
+      - .github/workflows/test-upm-signing.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upm-signing-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      package-tag: ${{ steps.package.outputs.package_tag }}
+    steps:
+      - name: Checkout test source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Read package version
+        id: package
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -er '.version | select(type == "string" and length > 0)' com.styly.shader-collection.urp/package.json)"
+          printf 'package_tag=v%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+
+  sign-package:
+    needs: package-source
+    uses: styly-dev/STYLY-NetSync/.github/workflows/sign-upm-package.yml@a721211f0bbe93506af160c1156c3869414cc79f
+    with:
+      package-path: com.styly.shader-collection.urp
+      release-commit: ${{ github.sha }}
+      release-tag: ${{ needs.package-source.outputs.package-tag }}
+      attach-to-release: false
+    secrets:
+      UPM_SERVICE_ACCOUNT_KEY_ID: ${{ secrets.UPM_SERVICE_ACCOUNT_KEY_ID }}
+      UPM_SERVICE_ACCOUNT_KEY_SECRET: ${{ secrets.UPM_SERVICE_ACCOUNT_KEY_SECRET }}
+      UPM_ORG_ID: ${{ secrets.UPM_ORG_ID }}
