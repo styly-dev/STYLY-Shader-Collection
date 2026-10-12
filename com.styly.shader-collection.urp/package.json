@@ -1,10 +1,10 @@
 {
   "name": "com.styly.shader-collection.urp",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "displayName": "STYLY Shader Collection - URP",
   "description": "STYLY Shader Collection for Universal Render Pipeline",
   "unity": "2022.3",
- "keywords": [
+  "keywords": [
     "Shader",
     "STYLY"
   ],
