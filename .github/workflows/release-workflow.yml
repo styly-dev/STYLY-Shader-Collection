@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Stable version number (for example, 0.0.6)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  PACKAGE_FILE: com.styly.shader-collection.urp/package.json
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_commit: ${{ steps.release.outputs.release_commit }}
+      release_tag: ${{ steps.validate.outputs.release_tag }}
+
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Check signing configuration
+        env:
+          UPM_SERVICE_ACCOUNT_KEY_ID: ${{ secrets.UPM_SERVICE_ACCOUNT_KEY_ID }}
+          UPM_SERVICE_ACCOUNT_KEY_SECRET: ${{ secrets.UPM_SERVICE_ACCOUNT_KEY_SECRET }}
+          UPM_ORG_ID: ${{ secrets.UPM_ORG_ID }}
+        run: |
+          set -euo pipefail
+          for NAME in UPM_SERVICE_ACCOUNT_KEY_ID UPM_SERVICE_ACCOUNT_KEY_SECRET UPM_ORG_ID; do
+            if [[ -z "${!NAME}" ]]; then
+              echo "Error: missing repository secret: $NAME"
+              exit 1
+            fi
+          done
+          curl -fsSL https://raw.githubusercontent.com/openupm/openupm/master/data/packages/com.styly.shader-collection.urp.yml \
+            -o "$RUNNER_TEMP/openupm.yml"
+          if ! grep -Eq '^trackingMode: githubRelease[[:space:]]*$' "$RUNNER_TEMP/openupm.yml"; then
+            echo 'Error: merge the OpenUPM githubRelease metadata migration before releasing'
+            exit 1
+          fi
+
+      - name: Validate version
+        id: validate
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          VERSION="${INPUT_VERSION#[vV]}"
+          CURRENT_VERSION="$(jq -er '.version' "$PACKAGE_FILE")"
+          STABLE_VERSION='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if [[ ! "$VERSION" =~ $STABLE_VERSION || ! "$CURRENT_VERSION" =~ $STABLE_VERSION ]]; then
+            echo 'Error: release versions must be stable semantic versions such as 0.0.6'
+            exit 1
+          fi
+          if [[ "$VERSION" == "$CURRENT_VERSION" || "$(printf '%s\n' "$CURRENT_VERSION" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]]; then
+            echo "Error: target version must be greater than $CURRENT_VERSION"
+            exit 1
+          fi
+
+          TAG_NAME="v$VERSION"
+          if git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
+            echo "Error: tag $TAG_NAME already exists"
+            exit 1
+          fi
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'release_tag=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Update package version
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          jq --arg version "$VERSION" '.version = $version' "$PACKAGE_FILE" > "$RUNNER_TEMP/package.json"
+          mv "$RUNNER_TEMP/package.json" "$PACKAGE_FILE"
+          git diff --check
+
+      - name: Commit and push release
+        id: release
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+          TAG_NAME: ${{ steps.validate.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git add "$PACKAGE_FILE"
+          git commit -m "chore: bump version to $VERSION"
+          git tag "$TAG_NAME"
+          git push --atomic origin HEAD:refs/heads/develop "refs/tags/$TAG_NAME"
+          printf 'release_commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.validate.outputs.release_tag }}
+        run: |
+          gh release create "$TAG_NAME" --draft --title "$TAG_NAME" --generate-notes \
+            --verify-tag --target "$(git rev-parse HEAD)"
+
+      - name: Summary
+        env:
+          TAG_NAME: ${{ steps.validate.outputs.release_tag }}
+        run: |
+          {
+            echo '## Shader Collection release draft'
+            printf '\nTag: `%s`\n' "$TAG_NAME"
+            echo
+            echo 'Wait for the sign-release job to succeed before publishing the draft.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  sign-release:
+    needs: prepare-release
+    uses: styly-dev/STYLY-NetSync/.github/workflows/sign-upm-package.yml@6c6e83ba45361dcded0e6885edfb7c61afccc554
+    with:
+      package-path: com.styly.shader-collection.urp
+      release-commit: ${{ needs.prepare-release.outputs.release_commit }}
+      release-tag: ${{ needs.prepare-release.outputs.release_tag }}
+    secrets:
+      UPM_SERVICE_ACCOUNT_KEY_ID: ${{ secrets.UPM_SERVICE_ACCOUNT_KEY_ID }}
+      UPM_SERVICE_ACCOUNT_KEY_SECRET: ${{ secrets.UPM_SERVICE_ACCOUNT_KEY_SECRET }}
+      UPM_ORG_ID: ${{ secrets.UPM_ORG_ID }}
