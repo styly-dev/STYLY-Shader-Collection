@@ -22,7 +22,7 @@ jobs:
   prepare-release:
     runs-on: ubuntu-latest
     outputs:
-      release_commit: ${{ steps.release.outputs.release_commit }}
+      release_commit: ${{ steps.release.outputs.release_commit || steps.validate.outputs.release_commit }}
       release_tag: ${{ steps.validate.outputs.release_tag }}
 
     steps:
@@ -66,20 +66,36 @@ jobs:
             echo 'Error: release versions must be stable semantic versions such as 0.0.6'
             exit 1
           fi
-          if [[ "$VERSION" == "$CURRENT_VERSION" || "$(printf '%s\n' "$CURRENT_VERSION" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]]; then
+          TAG_NAME="v$VERSION"
+          if [[ "$VERSION" == "$CURRENT_VERSION" ]]; then
+            if ! git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
+              echo 'Error: resuming the current version requires its existing release tag'
+              exit 1
+            fi
+            TAG_COMMIT="$(git rev-parse "$TAG_NAME^{commit}")"
+            TAG_VERSION="$(git show "$TAG_COMMIT:$PACKAGE_FILE" | jq -er '.version')"
+            if [[ "$TAG_VERSION" != "$VERSION" ]] || \
+              ! git merge-base --is-ancestor "$TAG_COMMIT" HEAD || \
+              ! git diff --quiet "$TAG_COMMIT" HEAD -- "${PACKAGE_FILE%/package.json}"; then
+              echo 'Error: the existing release tag must match the unchanged current package'
+              exit 1
+            fi
+            printf 'resume_release=true\n' >> "$GITHUB_OUTPUT"
+            printf 'release_commit=%s\n' "$TAG_COMMIT" >> "$GITHUB_OUTPUT"
+          elif [[ "$(printf '%s\n' "$CURRENT_VERSION" "$VERSION" | sort -V | tail -n 1)" != "$VERSION" ]]; then
             echo "Error: target version must be greater than $CURRENT_VERSION"
             exit 1
-          fi
-
-          TAG_NAME="v$VERSION"
-          if git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
+          elif git show-ref --verify --quiet "refs/tags/$TAG_NAME"; then
             echo "Error: tag $TAG_NAME already exists"
             exit 1
+          else
+            printf 'resume_release=false\n' >> "$GITHUB_OUTPUT"
           fi
           printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
           printf 'release_tag=%s\n' "$TAG_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Update package version
+        if: steps.validate.outputs.resume_release != 'true'
         env:
           VERSION: ${{ steps.validate.outputs.version }}
         run: |
@@ -89,6 +105,7 @@ jobs:
           git diff --check
 
       - name: Commit and push release
+        if: steps.validate.outputs.resume_release != 'true'
         id: release
         env:
           VERSION: ${{ steps.validate.outputs.version }}
@@ -108,9 +125,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ steps.validate.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.release_commit || steps.validate.outputs.release_commit }}
         run: |
-          gh release create "$TAG_NAME" --draft --title "$TAG_NAME" --generate-notes \
-            --verify-tag --target "$(git rev-parse HEAD)"
+          set -euo pipefail
+
+          # Recheck after each creation attempt because a timed-out request may succeed.
+          for ATTEMPT in 1 2 3; do
+            if gh release view "$TAG_NAME" --json tagName,isDraft \
+              > "$RUNNER_TEMP/draft-release.json" 2>/dev/null; then
+              jq -e --arg tag "$TAG_NAME" '.tagName == $tag and .isDraft == true' \
+                "$RUNNER_TEMP/draft-release.json" >/dev/null
+              exit 0
+            fi
+            echo "Creating release draft: attempt $ATTEMPT"
+            if ! gh release create "$TAG_NAME" --draft --title "$TAG_NAME" --generate-notes \
+              --verify-tag --target "$RELEASE_COMMIT" \
+              > "$RUNNER_TEMP/create-release.log" 2>&1; then
+              echo 'Draft creation returned an error; rechecking release state.'
+            fi
+          done
+
+          gh release view "$TAG_NAME" --json tagName,isDraft > "$RUNNER_TEMP/draft-release.json"
+          jq -e --arg tag "$TAG_NAME" '.tagName == $tag and .isDraft == true' \
+            "$RUNNER_TEMP/draft-release.json" >/dev/null
 
       - name: Summary
         env:

@@ -22,8 +22,12 @@ checks these settings before it changes the repository.
 
 Wait for all jobs, including **sign-release**, to succeed. Review the release
 notes and verify that `com.styly.shader-collection.urp-<version>.tgz` is attached
-before publishing the draft. If preparation or signing fails, inspect the
-branches, tag, and draft before retrying; do not publish the incomplete release.
+before publishing the draft. If preparation or signing fails after the version
+commit and tag are pushed, dispatch **Release** again with the same version.
+The workflow resumes from the existing tag if its package content still matches
+`develop`, skips the version update and push, and reuses or creates the draft.
+It retries transient draft-creation failures and rejects published releases.
+Inspect the run and draft before publishing; do not publish an incomplete release.
 
 This repository releases from `develop` and does not require a `main` branch.
 Existing package versions are unchanged. Shared implementation and setup:
