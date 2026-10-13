@@ -37,7 +37,7 @@ jobs:
 
   sign-package:
     needs: package-source
-    uses: styly-dev/STYLY-NetSync/.github/workflows/sign-upm-package.yml@a721211f0bbe93506af160c1156c3869414cc79f
+    uses: styly-dev/STYLY-NetSync/.github/workflows/sign-upm-package.yml@563e67538edf7d75edbcef96d1207e8cb760695a
     with:
       package-path: com.styly.shader-collection.urp
       release-commit: ${{ github.sha }}
